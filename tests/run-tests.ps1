@@ -67,6 +67,8 @@ function Get-MarkerCount([string]$exePath, [string]$markerHex) {
 
 function Invoke-Bat {
     param([string]$which = 'install', [hashtable]$envOverrides = @{})
+
+    # --- tripla checagem de seguranca antes de rodar qualquer bat ------------
     foreach ($k in $envOverrides.Keys) {
         if ($k -notmatch '^PLB_') { throw "GUARDA: variavel de teste fora do namespace PLB_: $k" }
     }
@@ -91,7 +93,6 @@ function Check-Report([hashtable]$r, [string]$label) {
     Out2 ''
     Out2 ('--- ' + $label + ' (exit=' + $r.ExitCode + ') ---') 'Cyan'
     foreach ($l in ($r.Output -split "`n")) { Out2 ('  | ' + $l) 'DarkGray' }
-    Out2 ''
 }
 
 function Assert-True([bool]$cond, [string]$label, [string]$detail) {
@@ -238,8 +239,72 @@ Check-Report $r 'T9: jogo nao encontrado (unattended, autodeteccao desligada)'
 Assert-True ($r.ExitCode -eq 1) 'T9a exit 1' ('exit=' + $r.ExitCode)
 Assert-True ($r.Output -match 'Nao encontrei') 'T9b mensagem amigavel' 'sem mensagem'
 
+# ==================================== teste 10: modo EMBUTIDO real (payload no topo) ==
+# Reproduz o caso do usuario final: NAO existe pasta files/ nem PLB_FILES_DIR;
+# o script so pode achar os zips nas variaveis $Zip*B64 (payload no topo).
+# Se a ordem payload->codigo do make-installer.ps1 quebrar (ou o escopo das
+# variaveis), este teste falha - exatamente o bug que o usuario final viu.
+$g10   = Join-Path $sandbox 't10'
+$app10 = New-FakeGame $g10
+
+# usa os ZIPS REAIS de files/ (mesma estrutura do install.bat de verdade)
+$stZip = Get-ChildItem -LiteralPath (Join-Path $root 'files') -Filter '*.zip' -File | Where-Object { $_.Name -match '(?i)standalone' }  | Select-Object -First 1
+$ptZip = Get-ChildItem -LiteralPath (Join-Path $root 'files') -Filter '*.zip' -File | Where-Object { $_.Name -match '(?i)multiplayer' } | Select-Object -First 1
+if (-not $stZip -or -not $ptZip) { throw 'T10: zips reais nao encontrados em files\' }
+
+$stB64 = [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes($stZip.FullName))
+$ptB64 = [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes($ptZip.FullName))
+$psTemplate = [System.IO.File]::ReadAllText((Join-Path $root 'src\install.ps1'), [System.Text.Encoding]::UTF8)
+
+# monta o script sintetico na MESMA ordem do make-installer.ps1: payload PRIMEIRO
+$q  = [char]39   # aspas simples
+$nl = "`r`n"
+$fullSyn = '$ZipStandaloneB64 = ' + $q + $stB64 + $q + $nl +
+           '$ZipPatchB64 = ' + $q + $ptB64 + $q + $nl + $nl + $psTemplate
+$fullB64 = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($fullSyn))
+
+$batSyn = Join-Path $sandbox 'install-synthetic.bat'
+$sb = New-Object System.Text.StringBuilder
+[void]$sb.AppendLine('@echo off')
+[void]$sb.AppendLine('chcp 65001 >nul')
+[void]$sb.AppendLine('set "PLB_DATA=%TEMP%\plb_data_%RANDOM%%RANDOM%.txt"')
+[void]$sb.AppendLine('if exist "%PLB_DATA%" del /q "%PLB_DATA%" >nul 2>nul')
+$CH = 7600
+for ($i = 0; $i -lt $fullB64.Length; $i += $CH) {
+    $len = [Math]::Min($CH, $fullB64.Length - $i)
+    [void]$sb.AppendLine('>>"%PLB_DATA%" echo K' + $fullB64.Substring($i, $len))
+}
+[void]$sb.AppendLine('powershell -NoProfile -ExecutionPolicy Bypass -Command "$L=[System.Collections.Generic.List[string]]::new(); foreach($ln in [System.IO.File]::ReadAllLines($env:PLB_DATA)){ if($ln.Length -gt 1 -and $ln[0] -eq [char]75){ $L.Add($ln.Substring(1)) } }; $s=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String([System.String]::Join('''', $L.ToArray()))); Invoke-Expression $s"')
+[void]$sb.AppendLine('set "PLB_ERR=%errorlevel%"')
+[void]$sb.AppendLine('if exist "%PLB_DATA%" del /q "%PLB_DATA%" >nul 2>nul')
+[void]$sb.AppendLine('exit /b %PLB_ERR%')
+[System.IO.File]::WriteAllText($batSyn, $sb.ToString(), [System.Text.Encoding]::ASCII)
+
+# roda SEM PLB_FILES_DIR e SEM pasta files: so o payload embutido pode salvar
+$envM10 = @{
+    PLB_TARGET_DIR         = $g10
+    PLB_APPDATA_DIR        = $app10
+    PLB_NO_PAUSE           = '1'
+    PLB_UNATTENDED         = '1'
+    PLB_DISABLE_AUTODETECT = '1'
+}
+if (-not (Test-TargetAllowed ([string]$envM10['PLB_TARGET_DIR']))) { throw 'GUARDA DE SANDBOX: alvo do T10 fora da sandbox!' }
+$old = @{}
+foreach ($k in $envM10.Keys) { $old[$k] = [System.Environment]::GetEnvironmentVariable($k); [System.Environment]::SetEnvironmentVariable($k, [string]$envM10[$k]) }
+try {
+    $out10  = & cmd.exe /c "`"$batSyn`" <nul" 2>&1
+    $code10 = $LASTEXITCODE
+} finally {
+    foreach ($k in $old.Keys) { [System.Environment]::SetEnvironmentVariable($k, $old[$k]) }
+}
+$r = @{ Output = ($out10 -join "`n"); ExitCode = $code10 }
+Check-Report $r 'T10: modo EMBUTIDO real (payload no topo, sem pasta files/)'
+Assert-True ($r.ExitCode -eq 0) 'T10a exit 0' ('exit=' + $r.ExitCode)
+Assert-True ($r.Output -match 'embutidos no instalador') 'T10b usou o payload embutido' 'nao usou'
+Assert-True (Test-Path (Join-Path $g10 'Data\Mods\Shared\meta.lsx')) 'T10c meta.lsx instalado do zip embutido' 'faltou'
+Assert-True ((Get-MarkerCount (Join-Path $g10 'bin\bg3.exe') '4183FE08') -eq 1) 'T10d patch aplicado (zips reais embutidos)' 'marcador ausente'
+
 Out2 ''
-Out2 '==================================================' 'Cyan'
 Out2 (' RESULTADO: ' + $pass + ' passaram, ' + $fail + ' falharam') $(if ($fail -eq 0) { 'Green' } else { 'Red' })
 Out2 (' Sandbox: ' + $sandbox) 'DarkGray'
 Out2 '==================================================' 'Cyan'

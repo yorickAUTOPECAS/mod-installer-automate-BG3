@@ -69,7 +69,10 @@ $payload.Add((Format-B64Var 'ZipStandaloneB64' $stChunks))
 $payload.Add('')
 $payload.Add((Format-B64Var 'ZipPatchB64' $ptChunks))
 
-$full = ($ps.TrimEnd() + "`r`n`r`n" + ($payload -join "`r`n") + "`r`n")
+$full = ($payload -join "`r`n") + "`r`n`r`n" + ($ps.TrimEnd()) + "`r`n"
+# NOTA IMPORTANTE: o payload vai NO INICIO do script. Via Invoke-Expression tudo
+# roda em ordem unica: se o payload viesse depois do codigo principal, o
+# Invoke-Main rodaria antes das variaveis $Zip*B64 existirem.
 $fullPath = Join-Path $outDir 'install.full.ps1'
 [System.IO.File]::WriteAllText($fullPath, $full, (New-Object System.Text.UTF8Encoding($false)))
 

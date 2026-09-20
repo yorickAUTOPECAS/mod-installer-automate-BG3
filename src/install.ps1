@@ -32,7 +32,9 @@ $ResultFile      = $env:PLB_RESULT_FILE
 
 $Script:SelfPath = $env:PLB_SELF
 if (-not $Script:SelfPath -or -not (Test-Path -LiteralPath $Script:SelfPath)) { $Script:SelfPath = $PSCommandPath }
-$Script:SelfDir = Split-Path -Parent $Script:SelfPath
+# $PSCommandPath vem VAZIO quando o codigo roda via Invoke-Expression (install.bat):
+# proteger o Split-Path contra string vazia.
+if ($Script:SelfPath) { $Script:SelfDir = Split-Path -Parent $Script:SelfPath } else { $Script:SelfDir = $null }
 
 # ---------------------------------------------------------- configuracao do mod --
 $Script:PlbVersion      = 'Standalone v3.5 + Multiplayer Patch v1.6'
@@ -186,9 +188,12 @@ function Initialize-ModPackages {
     } catch {}
 
     $hasEmbedded = $false
-    try { if (Get-Variable -Name ZipStandaloneB64 -Scope Script -ErrorAction SilentlyContinue) { if ($ZipStandaloneB64) { $hasEmbedded = $true } } } catch {}
+    try { if ($ZipStandaloneB64 -and $ZipPatchB64) { $hasEmbedded = $true } } catch { $hasEmbedded = $false }
+    # (sem qualificador de escopo de proposito: via Invoke-Expression o payload
+    #  vive no escopo global e a resolucao dinamica o encontra normalmente)
 
     if ($hasEmbedded) {
+        $Script:UsingEmbedded = $true
         Write-Step 'Carregando os arquivos do mod (embutidos no instalador)'
         $Script:ZipStandalone = ConvertFrom-Base64ToZip $ZipStandaloneB64 'Standalone'
         $Script:ZipPatch      = ConvertFrom-Base64ToZip $ZipPatchB64 'Multiplayer Patch'
@@ -723,7 +728,7 @@ function Save-Manifest([string]$gameDir) {
     $root = Join-Path $gameDir $Script:BackupDirName
     $manifestPath = Join-Path $root 'manifest.json'
     $origin = 'arquivos-embutidos-no-install.bat'
-    if (-not $ZipStandaloneB64) { $origin = 'pasta files local' }
+    if (-not $Script:UsingEmbedded) { $origin = 'pasta files local' }
     # NOTA: usar .ToArray() em vez de @($lista) - o construtor @() quebra com
     # List[object] vazia em algumas versoes do PowerShell 5.1.
     $manifest = [ordered]@{
