@@ -1,6 +1,7 @@
-# Forca CRLF (o cmd.exe exige) e evita que o Git altere os .bats
-*.bat text eol=crlf
-*.cmd text eol=crlf
+# .bat/.cmd: NUNCA deixar o Git converter line endings (cmd.exe exige CRLF).
+# -text = os bytes sao commitados e servidos exatamente como estao no disco.
+*.bat -text
+*.cmd -text
 *.ps1 text eol=crlf
 
 # Binarios: nunca alterar
