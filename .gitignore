@@ -1,0 +1,11 @@
+# Lixo local
+work/
+*.log
+Thumbs.db
+desktop.ini
+
+# Zips originais baixados do Nexus (versao com nome longo) - usamos copias renomeadas em files/
+Party Limit Begone *.zip
+
+# Sandbox temporaria dos testes, se sobrar algo
+plb_tests_*/
